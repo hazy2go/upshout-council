@@ -42,7 +42,7 @@ before trusting the number.
    (`POST /api/card`).
 2. **Convene the council** — `POST /api/council` streams the deliberation over SSE:
    - **Round 1** — the four experts research independently (parallel, web search,
-     agentic loop capped at `COUNCIL_R1_MAX_TURNS`, default 4).
+     agentic loop capped at `COUNCIL_R1_MAX_TURNS`, default 6).
    - **Round 2** — each rebuts the others after seeing their takes. This is a **single
      no-web-search turn**: the expert gets its own round-1 research back plus digests of
      the others, and argues from that. (Re-running the agentic search loop here was the
@@ -73,13 +73,18 @@ runs per card, and Opus is ~5× the cost, so it is **not** the default. Override
 A single card is **9 LLM calls** (4 research + 4 rebuttals + 1 synthesis); an event can be
 10+ cards, so the pipeline is aggressively token-tuned:
 
-- Round 1's agentic search loop is capped (`COUNCIL_R1_MAX_TURNS=4` by default) — each
+- Round 1's agentic search loop is capped (`COUNCIL_R1_MAX_TURNS=6` by default) — each
   extra turn re-sends the whole growing context including fetched pages, so cost grows
-  quadratically with turns. Raise it (e.g. `6`) if research feels thin.
+  quadratically with turns. Lower it only with care — below ~6 experts can run out of steps before writing their assessment.
 - Round 2 runs **without web search** as a single turn (see above).
-- Unused tool schemas (Bash/Read/Edit/…) are stripped from every request — `allowedTools`
-  alone only gates permissions, it doesn't remove the schema tokens.
-- Experts are budgeted to ~150 words, the verdict to ~300.
+- The toolset is a positive base set (`tools: ["WebSearch","WebFetch"]`, nothing on
+  no-search turns) — `allowedTools` alone only gates permissions, it doesn't remove
+  schema tokens, and a full toolset triggers schema deferral that makes experts burn
+  their first turn on ToolSearch.
+- Experts are budgeted to 3 searches and ~150 words; the verdict to ~300 words. An
+  expert that runs out of steps without answering is marked as **MISSING** downstream
+  (never silently empty — round 2 would otherwise "debate" research that doesn't exist
+  and confabulate facts nobody sourced).
 
 Every turn reports its real usage: the UI shows a **live token/cost tally** per card (in
 the status ticker, and per row in Event mode) plus a **Σ batch total** in the batch bar.
@@ -218,7 +223,7 @@ Restart `npm run dev` after changing `.env.local`.
 | `UPSHOT_COOKIE` | — | Bunny Shield cookies (the part that clears the shield) |
 | `COUNCIL_EXPERT_TIMEOUT_MS` | `210000` | abort a hung expert turn (keeps partial output) |
 | `COUNCIL_SYNTH_TIMEOUT_MS` | `180000` | abort a hung synthesis turn |
-| `COUNCIL_R1_MAX_TURNS` | `4` | round-1 agentic search turn cap per expert (cost grows quadratically) |
+| `COUNCIL_R1_MAX_TURNS` | `6` | round-1 agentic search turn cap per expert (cost grows quadratically) |
 | `COUNCIL_DB_PATH` | `data/council.db` | where the SQLite run history lives |
 
 ### Pricing & expected value

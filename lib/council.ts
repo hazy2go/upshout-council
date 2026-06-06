@@ -11,8 +11,11 @@ const EXPERT_TIMEOUT_MS = Number(process.env.COUNCIL_EXPERT_TIMEOUT_MS ?? 210_00
 const SYNTH_TIMEOUT_MS = Number(process.env.COUNCIL_SYNTH_TIMEOUT_MS ?? 180_000);
 
 // Round-1 agentic turn cap. Each extra turn re-sends the whole growing context
-// (including fetched pages), so the loop's cost grows quadratically — keep it tight.
-const R1_MAX_TURNS = Number(process.env.COUNCIL_R1_MAX_TURNS ?? 4);
+// (including fetched pages), so the loop's cost grows quadratically — keep it
+// tight, but NOT too tight: the first turn is burned on tool-schema loading
+// (ToolSearch) and experts often spend a few turns searching, so below ~6 they
+// run out of turns BEFORE writing their assessment and return nothing.
+const R1_MAX_TURNS = Number(process.env.COUNCIL_R1_MAX_TURNS ?? 6);
 
 /** Token-cheap digest of a take for feeding to others/the synth. */
 function digest(expert: Expert, text: string, maxChars = 280, tag = ""): string {
@@ -189,8 +192,8 @@ async function runExpert(
 
   const roundDirective =
     round === 1
-      ? `Use web search to research current facts BEFORE you commit to a number — weight the most recent information heavily and stamp the date of time-sensitive facts (a settled or stale fact must not be treated as a live forecast). Cite what you find.`
-      : `You have NO web access this turn. Argue strictly from your round-1 research (included below) and the other council members' takes — do not invent new facts.`;
+      ? `Use web search to research current facts BEFORE you commit to a number — weight the most recent information heavily and stamp the date of time-sensitive facts (a settled or stale fact must not be treated as a live forecast). Cite what you find. Budget: at most 3 searches TOTAL, one at a time — once you have searched 3 times (or learned enough sooner), your NEXT message MUST be the final written assessment with NO tool calls. You have a hard step limit; an unanswered turn is a failed turn, and a decent answer from 2 searches beats no answer from 6. NEVER state an event result you did not find in a source; if the outcome hasn't happened yet, forecast it and say so.`
+      : `You have NO web access this turn. Argue strictly from your round-1 research (included below) and the other council members' takes — do not invent new facts. If your own round-1 research is missing or incomplete, say so, lean on the others' takes, and be explicitly conservative — NEVER assert an event result nobody sourced.`;
 
   const system = `${expert.persona}\n\n${SHARED_CONTEXT}\n\nToday's date is ${today()}. ${roundDirective} Keep your written analysis under 150 words — dense and factual, no filler.`;
 
@@ -240,6 +243,13 @@ async function runExpert(
     clearTimeout(timer);
   }
 
+  // Stream fallback: after multi-turn tool use the SDK sometimes delivers the
+  // final text only in the `result` message with no text deltas — without this
+  // the UI panel for the round renders empty even though the run succeeded.
+  if (!acc.trim() && full.trim()) {
+    emit({ type: "delta", expertId: expert.id, round, text: full.trim() });
+  }
+
   emit({ type: "expert_done", expertId: expert.id, round });
   return (full || acc).trim();
 }
@@ -285,9 +295,20 @@ export async function runCouncil(card: Card, emit: Emit, signal?: AbortSignal): 
 
   const round1Prompt = `Here is the card under review:\n\n${brief}\n\nResearch this outcome and give your independent assessment. End your response with two lines exactly:\nPROBABILITY: <0-100>%\nLEAN: <BUY | HOLD | PASS>`;
 
-  const round1 = await Promise.all(
+  const round1raw = await Promise.all(
     EXPERTS.map((e) => runExpert(e, round1Prompt, 1, emit, signal, onUsage))
   );
+  // An expert that ran out of steps (or errored) returns "" — make that explicit
+  // downstream, or round 2 "argues from research" that doesn't exist and the
+  // council confabulates facts nobody sourced.
+  const round1 = round1raw.map((t, i) => {
+    if (t) return t;
+    const note =
+      "(NO round-1 take — this expert ran out of research steps before writing an assessment. Treat their input as MISSING, not as agreement.)";
+    // Show the gap in the UI too — an empty panel reads as a glitch.
+    emit({ type: "delta", expertId: EXPERTS[i].id, round: 1, text: note });
+    return note;
+  });
 
   if (aborted()) return;
 
