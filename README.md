@@ -241,9 +241,32 @@ council:
 ### Bunny Shield note
 
 The Upshot API sits behind Bunny Shield, which flags IPs. If your IP is flagged, server-side
-card fetches return the HTML challenge — the UI then prompts you to paste the card JSON from
-your authenticated browser. To fetch server-side, replay your browser session via
-`UPSHOT_BEARER` + `UPSHOT_COOKIE`. See `upshot-api/BUNNY_SHIELD.md`.
+fetches return the HTML challenge. The UI gives you three escape hatches, in order of how
+much pain they cost:
+
+1. **PASTE TOKEN** (top of the page). Run this bookmarklet on a logged-in `upshot.cards` tab
+   and paste the copied JSON — the app pulls out the bearer (and decodes its JWT for the
+   wallet + expiry) and uses it for all subsequent fetches. The token never touches disk; it
+   sits in process memory until the server restarts or it expires. Beats editing
+   `.env.local`.
+
+   ```js
+   javascript:(() => {
+     const raw = localStorage.getItem("global-store");
+     const token = JSON.parse(raw)?.state?.authState?.accessToken;
+     const p = JSON.parse(atob(token.split(".")[1].replace(/-/g,"+").replace(/_/g,"/")));
+     const json = JSON.stringify({ token, expires_at: p.exp ? new Date(p.exp*1000).toISOString() : null, wallet: p.walletAddress, user_id: p.id }, null, 2);
+     navigator.clipboard?.writeText(json);
+   })();
+   ```
+
+2. **Paste the API response JSON**. If the bearer alone isn't enough (Bunny Shield is still
+   blocking by IP), each fetch flow (single card, event) lets you paste the raw JSON straight
+   from your browser's DevTools → Network panel.
+
+3. **`UPSHOT_BEARER` / `UPSHOT_COOKIE` in `.env.local`**. The classic path — replay your
+   browser session with full headers. The runtime token from (1) takes precedence when set.
+   See `upshot-api/BUNNY_SHIELD.md`.
 
 ---
 
@@ -257,6 +280,8 @@ app/
   api/card/route.ts     # fetch / paste-fallback
   api/council/route.ts  # SSE deliberation stream
   api/history/route.ts  # run history: list / delete (local SQLite)
+  api/auth/route.ts     # runtime Upshot bearer (paste bookmarklet token)
+  api/event/route.ts    # event card list + paste-JSON fallback
 lib/
   council.ts            # orchestration (rounds + synthesis), provider-agnostic
   llm/
@@ -265,6 +290,7 @@ lib/
     codex.ts            # Codex SDK runner (ChatGPT sub)
     types.ts            # shared RunRequest / callbacks / TurnUsage contract
   db.ts                 # SQLite run history (auto-created at data/council.db)
+  upshotAuth.ts         # in-memory runtime bearer (bookmarklet paste flow)
   experts.ts            # the four personas
   upshot.ts             # Upshot client + Bunny Shield detection
   types.ts

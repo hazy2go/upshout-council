@@ -1163,3 +1163,60 @@ button.stop:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.02);
 }
 .hist-verdict .buybtn { margin-top: 10px; display: inline-block; }
+
+/* ---- Upshot auth pill ---- */
+.auth-pill {
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px 14px;
+  margin: 14px 0 18px;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.auth-pill-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.auth-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.auth-dot.ok  { background: var(--cyan, #6cf); box-shadow: 0 0 8px var(--cyan, #6cf); }
+.auth-dot.off { background: var(--ink-dim, #555); }
+.auth-label { flex: 1; color: var(--ink-dim, #8a8f98); }
+.auth-pill-body {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line, rgba(255, 255, 255, 0.12));
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.auth-pill-body p { color: var(--ink-dim, #8a8f98); margin: 0 0 8px; }
+.auth-snippet {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.1));
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-x: auto;
+  margin: 0 0 10px;
+  white-space: pre;
+}
+.auth-pill-body textarea {
+  width: 100%;
+  min-height: 90px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  color: var(--ink, #ddd);
+  padding: 8px 10px;
+  font-family: var(--hud, ui-monospace, monospace);
+  font-size: 11px;
+}
+.auth-pill-body textarea:focus { outline: none; border-color: var(--line-strong, rgba(255, 255, 255, 0.3)); }
+.paste-actions { display: flex; gap: 8px; margin-top: 8px; }
+button.ghost.sm, button.solid.sm { font-size: 10px; padding: 4px 10px; }

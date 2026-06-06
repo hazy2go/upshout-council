@@ -51,7 +51,9 @@ export default function Home() {
   const [eventUrl, setEventUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [pasteMode, setPasteMode] = useState(false);
+  // `pasteMode` is the Bunny Shield fallback: "card" for the link/wallet single-card
+  // paste, "event" for the event-cards-list paste. false = hidden.
+  const [pasteMode, setPasteMode] = useState<false | "card" | "event">(false);
   const [pasteValue, setPasteValue] = useState("");
 
   // wallet picker
@@ -141,7 +143,7 @@ export default function Home() {
     const fails = results.filter((r) => !r.card);
     setBusy(false);
     if (!cards.length) {
-      if (fails.some((f) => f.error === "bunny_shield")) setPasteMode(true);
+      if (fails.some((f) => f.error === "bunny_shield")) setPasteMode("card");
       else setError(`Couldn't resolve any cards${fails[0]?.error ? ` (${fails[0].error})` : ""}.`);
       return;
     }
@@ -156,22 +158,28 @@ export default function Home() {
 
   async function handlePaste() {
     setError("");
+    const endpoint = pasteMode === "event" ? "/api/event" : "/api/card";
     try {
-      const res = await fetch("/api/card", {
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ json: pasteValue }),
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error || "Could not parse pasted card.");
+        setError(data.error || "Could not parse pasted JSON.");
         return;
       }
+      const wasEvent = pasteMode === "event";
       setPasteMode(false);
       setPasteValue("");
-      startBatch([data.card as Card]);
+      if (wasEvent) {
+        startBatch(data.cards as Card[], "compact", data.eventName || "EVENT");
+      } else {
+        startBatch([data.card as Card]);
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not parse pasted card.");
+      setError(e instanceof Error ? e.message : "Could not parse pasted JSON.");
     }
   }
 
@@ -209,7 +217,10 @@ export default function Home() {
       const res = await fetch(`/api/event?event=${encodeURIComponent(eventUrl)}`);
       const data = await res.json();
       if (res.status === 409 && data.error === "bunny_shield") {
-        setError("Bunny Shield blocked the event fetch — set UPSHOT_BEARER/UPSHOT_COOKIE or try a clean IP.");
+        setError(
+          "Bunny Shield blocked the event fetch — set UPSHOT_BEARER/UPSHOT_COOKIE, try a clean IP, or paste the event JSON below."
+        );
+        setPasteMode("event");
       } else if (!res.ok) {
         setError(data.error || "Failed to load event.");
       } else {
@@ -277,6 +288,8 @@ export default function Home() {
           <small>UNIT {String(EXPERTS.length).padStart(2, "0")} · ONLINE</small>
         </div>
       </header>
+
+      <AuthPill />
 
       <p className="subtitle">
         {EXPERTS.length} AI prediction-market pilots research, debate, and call your Upshot card.
@@ -355,19 +368,44 @@ export default function Home() {
       {pasteMode && (
         <div className="paste-box">
           <h3>BUNNY SHIELD BLOCKED THE SERVER FETCH</h3>
-          <p>
-            Open the card in your browser, hit{" "}
-            <code>{`/api/v1/cards/<id>?include=event,supply`}</code>, and paste the
-            JSON here.
-          </p>
+          {pasteMode === "event" ? (
+            <p>
+              Open the event in your logged-in browser, hit{" "}
+              <code>{`/api/v1/cards?eventId=<id>&include=event,supply&perPage=100`}</code>,
+              and paste the JSON response here. If the event has &gt;100 cards, concatenate
+              the <code>data</code> arrays from each page — or paste a page at a time. You
+              can also use <b>PASTE TOKEN</b> above and retry RUN EVENT.
+            </p>
+          ) : (
+            <p>
+              Open the card in your browser, hit{" "}
+              <code>{`/api/v1/cards/<id>?include=event,supply`}</code>, and paste the JSON
+              here. (Or use <b>PASTE TOKEN</b> above and retry — usually that's enough.)
+            </p>
+          )}
           <textarea
-            placeholder='{ "data": { "id": "cm…", "name": "…", "event": { … } } }'
+            placeholder={
+              pasteMode === "event"
+                ? '{ "data": [ { "id": "cm…", "name": "…", "event": { … } }, … ] }'
+                : '{ "data": { "id": "cm…", "name": "…", "event": { … } } }'
+            }
             value={pasteValue}
             onChange={(e) => setPasteValue(e.target.value)}
           />
-          <button className="solid" onClick={handlePaste} disabled={!pasteValue.trim()}>
-            USE THIS CARD
-          </button>
+          <div className="paste-actions">
+            <button className="solid" onClick={handlePaste} disabled={!pasteValue.trim()}>
+              {pasteMode === "event" ? "USE THESE CARDS" : "USE THIS CARD"}
+            </button>
+            <button
+              className="ghost"
+              onClick={() => {
+                setPasteMode(false);
+                setPasteValue("");
+              }}
+            >
+              CANCEL
+            </button>
+          </div>
         </div>
       )}
 
@@ -485,6 +523,133 @@ export default function Home() {
 
 // Compact event-mode run: same council + debate under the hood, but we skip the
 // streaming/debate UI and surface only the final verdict (events can have many cards).
+// ---- Auth pill: paste the bookmarklet token JSON to authenticate server fetches.
+// The token never leaves the process — it's held in memory by /api/auth and used
+// as the Authorization header on Upshot calls until the server restarts or the
+// token expires. Beats editing .env.local. ----
+
+type AuthStatus = {
+  active: boolean;
+  source?: string;
+  wallet?: string | null;
+  expiresAt?: number | null;
+  tokenPreview?: string;
+};
+
+function AuthPill() {
+  const [status, setStatus] = useState<AuthStatus | null>(null);
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState("");
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch("/api/auth");
+      setStatus(await res.json());
+    } catch {
+      setStatus({ active: false });
+    }
+  }, []);
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  async function save() {
+    setSaving(true);
+    setErr("");
+    try {
+      const res = await fetch("/api/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: value }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setErr(data.error || "Could not parse token.");
+        return;
+      }
+      setValue("");
+      setOpen(false);
+      await refresh();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function clear() {
+    await fetch("/api/auth", { method: "DELETE" });
+    await refresh();
+  }
+
+  const expiresIn = status?.expiresAt
+    ? Math.max(0, Math.round((status.expiresAt - Date.now()) / 60000))
+    : null;
+
+  return (
+    <div className="auth-pill">
+      <div className="auth-pill-row">
+        <span className={`auth-dot ${status?.active ? "ok" : "off"}`} />
+        <span className="auth-label">
+          UPSHOT AUTH ▸{" "}
+          {status?.active
+            ? `${status.wallet ? `${status.wallet.slice(0, 6)}…${status.wallet.slice(-4)}` : "active"}${
+                expiresIn != null ? ` · expires in ${expiresIn}m` : ""
+              }`
+            : "not set — pastes only / public fetches"}
+        </span>
+        <button className="ghost sm" onClick={() => setOpen((v) => !v)}>
+          {open ? "CLOSE" : status?.active ? "REPLACE" : "PASTE TOKEN"}
+        </button>
+        {status?.active && (
+          <button className="ghost sm" onClick={clear}>
+            CLEAR
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="auth-pill-body">
+          <p>
+            Run this bookmarklet on a logged-in <code>upshot.cards</code> tab, then paste
+            the copied JSON here (or paste the raw bearer):
+          </p>
+          <pre className="auth-snippet">
+{`javascript:(() => {
+  const raw = localStorage.getItem("global-store");
+  if (!raw) throw new Error("No global-store — log into upshot.cards first.");
+  const token = JSON.parse(raw)?.state?.authState?.accessToken;
+  if (!token) throw new Error("No accessToken in global-store.");
+  const p = JSON.parse(atob(token.split(".")[1].replace(/-/g,"+").replace(/_/g,"/")));
+  const json = JSON.stringify({ token, expires_at: p.exp ? new Date(p.exp*1000).toISOString() : null, wallet: p.walletAddress, user_id: p.id }, null, 2);
+  navigator.clipboard?.writeText(json);
+  console.log("Copied. Wallet:", p.walletAddress);
+})();`}
+          </pre>
+          <textarea
+            placeholder='paste { "token": "eyJ…", "wallet": "0x…", … } or a raw eyJ… bearer'
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            spellCheck={false}
+          />
+          {err && <div className="error">{err}</div>}
+          <div className="paste-actions">
+            <button
+              className="solid"
+              onClick={save}
+              disabled={!value.trim() || saving}
+            >
+              {saving ? "SAVING…" : "USE THIS TOKEN"}
+            </button>
+            <button className="ghost" onClick={() => setOpen(false)}>
+              CANCEL
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- History: past council runs from the local SQLite DB ----
 
 type HistoryRun = {

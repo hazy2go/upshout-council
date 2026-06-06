@@ -1,4 +1,5 @@
 import type { Card } from "./types";
+import { getRuntimeAuth } from "./upshotAuth";
 
 const API_BASE =
   process.env.UPSHOT_API_BASE || "https://api-mainnet.upshotcards.net/api/v1";
@@ -33,9 +34,11 @@ async function getJson(url: string): Promise<unknown> {
   };
   // Replay your authenticated browser session so requests clear Bunny Shield
   // (cookies) and pass auth (bearer). Grab both from your browser devtools.
-  if (process.env.UPSHOT_BEARER) {
-    const t = process.env.UPSHOT_BEARER.replace(/^Bearer\s+/i, "");
-    headers.Authorization = `Bearer ${t}`;
+  // Runtime token (pasted via the bookmarklet) wins over the env fallback.
+  const runtime = getRuntimeAuth();
+  const bearer = runtime?.bearer ?? process.env.UPSHOT_BEARER ?? null;
+  if (bearer) {
+    headers.Authorization = `Bearer ${bearer.replace(/^Bearer\s+/i, "")}`;
   }
   if (process.env.UPSHOT_COOKIE) headers.Cookie = process.env.UPSHOT_COOKIE;
 
