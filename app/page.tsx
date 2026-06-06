@@ -158,6 +158,41 @@ export default function Home() {
 
   async function handlePaste() {
     setError("");
+    const v = pasteValue.trim();
+    // Detect a bearer-token paste — bookmarklet JSON, raw global-store blob, or
+    // a bare JWT — and route THAT to /api/auth instead of the data parser. Then
+    // retry the original fetch automatically. This is what the user actually
+    // wants 90% of the time when Bunny Shield blocked them.
+    const looksLikeTokenJson =
+      v.startsWith("{") && /"(token|accessToken|authState)"\s*:/.test(v);
+    const looksLikeBareJwt =
+      /^(Bearer\s+)?[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(v);
+
+    if (looksLikeTokenJson || looksLikeBareJwt) {
+      try {
+        const res = await fetch("/api/auth", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ input: v }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setError(data.error || "Could not parse token.");
+          return;
+        }
+        const wasEvent = pasteMode === "event";
+        setPasteMode(false);
+        setPasteValue("");
+        // Retry whatever the user was trying to do when Bunny Shield bit.
+        if (wasEvent) await handleLoadEvent();
+        else await handleConveneLinks();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Could not save token.");
+      }
+      return;
+    }
+
+    // Otherwise treat as raw API-response JSON (the "paste the data" path).
     const endpoint = pasteMode === "event" ? "/api/event" : "/api/card";
     try {
       const res = await fetch(endpoint, {
@@ -368,33 +403,29 @@ export default function Home() {
       {pasteMode && (
         <div className="paste-box">
           <h3>BUNNY SHIELD BLOCKED THE SERVER FETCH</h3>
-          {pasteMode === "event" ? (
-            <p>
-              Open the event in your logged-in browser, hit{" "}
-              <code>{`/api/v1/cards?eventId=<id>&include=event,supply&perPage=100`}</code>,
-              and paste the JSON response here. If the event has &gt;100 cards, concatenate
-              the <code>data</code> arrays from each page — or paste a page at a time. You
-              can also use <b>PASTE TOKEN</b> above and retry RUN EVENT.
-            </p>
-          ) : (
-            <p>
-              Open the card in your browser, hit{" "}
-              <code>{`/api/v1/cards/<id>?include=event,supply`}</code>, and paste the JSON
-              here. (Or use <b>PASTE TOKEN</b> above and retry — usually that's enough.)
-            </p>
-          )}
+          <p>
+            <b>Easiest:</b> paste the JSON copied by the AUTH bookmarklet (or a bare{" "}
+            <code>eyJ…</code> JWT) — the app will authenticate and retry the fetch for you.
+          </p>
+          <p>
+            <b>Or paste the raw API response</b> from your logged-in browser:{" "}
+            {pasteMode === "event" ? (
+              <>
+                <code>{`/api/v1/cards?eventId=<id>&include=event,supply&perPage=100`}</code>{" "}
+                (concatenate <code>data</code> arrays if &gt;100 cards).
+              </>
+            ) : (
+              <code>{`/api/v1/cards/<id>?include=event,supply`}</code>
+            )}
+          </p>
           <textarea
-            placeholder={
-              pasteMode === "event"
-                ? '{ "data": [ { "id": "cm…", "name": "…", "event": { … } }, … ] }'
-                : '{ "data": { "id": "cm…", "name": "…", "event": { … } } }'
-            }
+            placeholder='paste token JSON, a raw eyJ… JWT, or the API response JSON'
             value={pasteValue}
             onChange={(e) => setPasteValue(e.target.value)}
           />
           <div className="paste-actions">
             <button className="solid" onClick={handlePaste} disabled={!pasteValue.trim()}>
-              {pasteMode === "event" ? "USE THESE CARDS" : "USE THIS CARD"}
+              SUBMIT
             </button>
             <button
               className="ghost"
