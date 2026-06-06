@@ -27,6 +27,16 @@ export function extractCall(text: string): { prob: number | null; lean: string |
   return { prob, lean };
 }
 
+/**
+ * Pull an expert's committed STATUS line: did they find the outcome already
+ * decided in a source (SETTLED), or is it still open/unverified? Last wins.
+ */
+export function extractStatus(text: string): "SETTLED" | "OPEN" | null {
+  const t = deEmphasize(text);
+  const m = [...t.matchAll(/STATUS:\s*(SETTLED|OPEN)/gi)];
+  return m.length ? (m[m.length - 1][1].toUpperCase() as "SETTLED" | "OPEN") : null;
+}
+
 /** Pull the headline probability from a synthesizer verdict. */
 export function extractVerdictProb(text: string): number | null {
   const t = deEmphasize(text);

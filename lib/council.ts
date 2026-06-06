@@ -3,7 +3,7 @@ import { EXPERTS } from "./experts";
 import { fromMicro } from "./upshot";
 import { runAgent, providerLabel } from "./llm";
 import type { TurnUsage } from "./llm/types";
-import { extractCall, extractVerdictProb, extractVerdictCall } from "./parse";
+import { extractCall, extractStatus, extractVerdictProb, extractVerdictCall } from "./parse";
 import { saveRun } from "./db";
 
 // Per-turn timeouts so one hung agent can't stall the batch (overridable via env).
@@ -293,7 +293,7 @@ export async function runCouncil(card: Card, emit: Emit, signal?: AbortSignal): 
     message: `Council researching independently (via ${providerLabel()})…`,
   });
 
-  const round1Prompt = `Here is the card under review:\n\n${brief}\n\nResearch this outcome and give your independent assessment. End your response with two lines exactly:\nPROBABILITY: <0-100>%\nLEAN: <BUY | HOLD | PASS>`;
+  const round1Prompt = `Here is the card under review:\n\n${brief}\n\nResearch this outcome and give your independent assessment. End your response with three lines exactly:\nPROBABILITY: <0-100>%\nLEAN: <BUY | HOLD | PASS>\nSTATUS: <SETTLED | OPEN>  (SETTLED only if you FOUND the decided outcome in a source — name the source; otherwise OPEN)`;
 
   const round1raw = await Promise.all(
     EXPERTS.map((e) => runExpert(e, round1Prompt, 1, emit, signal, onUsage))
@@ -324,7 +324,7 @@ export async function runCouncil(card: Card, emit: Emit, signal?: AbortSignal): 
 
       // Round 2 has no web search, so the expert needs its OWN round-1 research
       // back (a fresh query has no memory of it) plus the others' digests.
-      const prompt = `The card under review:\n\n${brief}\n\nYOUR round-1 research and take:\n\n${round1[selfIdx].trim()}\n\nHere are the other council members' first-round takes (digested):\n\n${others}\n\nWhere do you disagree with them, and why? Do any of their points change your view? Give your UPDATED assessment, ending with two lines exactly:\nPROBABILITY: <0-100>%\nLEAN: <BUY | HOLD | PASS>`;
+      const prompt = `The card under review:\n\n${brief}\n\nYOUR round-1 research and take:\n\n${round1[selfIdx].trim()}\n\nHere are the other council members' first-round takes (digested):\n\n${others}\n\nWhere do you disagree with them, and why? Do any of their points change your view? Give your UPDATED assessment, ending with three lines exactly:\nPROBABILITY: <0-100>%\nLEAN: <BUY | HOLD | PASS>\nSTATUS: <SETTLED | OPEN>  (SETTLED only if a sourced, decided outcome was found — you cannot upgrade to SETTLED this round, since you cannot search)`;
 
       return runExpert(e, prompt, 2, emit, signal, onUsage);
     })
@@ -338,6 +338,21 @@ export async function runCouncil(card: Card, emit: Emit, signal?: AbortSignal): 
 
   if (aborted()) return;
 
+  // ---- Fact-gate: a "settled" outcome needs corroboration ----
+  // One pilot over-reading a speculative article must not let the council treat
+  // a live event as decided. SETTLED claims come from round 1 (the round with
+  // web access); fewer than 2 independent claims → the synth is told to treat
+  // the outcome as OPEN and discount any asserted result.
+  const settledBy = EXPERTS.filter((_, i) => extractStatus(round1[i]) === "SETTLED").map(
+    (e) => e.name
+  );
+  const factGate =
+    settledBy.length >= 2
+      ? `\n\nFact check: ${settledBy.length} of ${EXPERTS.length} pilots independently sourced the outcome as already SETTLED (${settledBy.join(", ")}). Before treating the outcome as decided, you MUST verify they agree on WHAT happened (same winner / same result). If their reported results disagree, at least one source is wrong — treat the outcome as DISPUTED, do NOT pick a winner, forecast cautiously, and flag the contradiction in Risks.`
+      : settledBy.length === 1
+        ? `\n\nFact check: only ONE pilot (${settledBy[0]}) claims the outcome is already settled — that is UNCORROBORATED. Treat the outcome as OPEN: discount the asserted result, forecast the probability, and flag the uncorroborated claim in Risks.`
+        : `\n\nFact check: no pilot sourced a decided outcome — the event is OPEN. If any take speaks of the result in the past tense, treat it as unsourced speculation, not fact.`;
+
   // ---- Synthesis: final verdict ----
   emit({ type: "status", phase: "verdict", message: "Synthesizing the final verdict…" });
 
@@ -346,7 +361,7 @@ biases (a quant on base rates, a domain insider on resolution mechanics, a contr
 have each researched and debated a card. Weigh their arguments — don't just average them. Note where they agree
 and where the disagreement is most informative. Be decisive but honest about uncertainty.\n\n${SHARED_CONTEXT}\n\nToday's date is ${today()}.`;
 
-  const synthPrompt = `The card under review:\n\n${brief}\n\nThe council's takes:\n\n${finalTakes}\n\nDeliver the final verdict in markdown with these sections:\n\n## Verdict\nOne punchy sentence.\n\n## Final probability\nA single number 0–100% that the card WINS, plus your confidence (Low / Medium / High).\n\n## The split\nState the range of the four pilots' probabilities (lowest–highest, naming who anchored each end), then call out the SINGLE most informative disagreement — the one clash that actually matters for the decision — and say which side you sided with and why. Don't just note they agreed; surface where the tension was.\n\n## Recommendation\nBUY, HOLD, or PASS — and at the current price, is it +EV? One short paragraph.\n\n## Key factors\n3–5 bullets driving the call.\n\n## Risks\n2–3 bullets on what would make this wrong.\n\nKeep the whole verdict under 300 words.`;
+  const synthPrompt = `The card under review:\n\n${brief}\n\nThe council's takes:\n\n${finalTakes}${factGate}\n\nDeliver the final verdict in markdown with these sections:\n\n## Verdict\nOne punchy sentence.\n\n## Final probability\nA single number 0–100% that the card WINS, plus your confidence (Low / Medium / High).\n\n## The split\nState the range of the four pilots' probabilities (lowest–highest, naming who anchored each end), then call out the SINGLE most informative disagreement — the one clash that actually matters for the decision — and say which side you sided with and why. Don't just note they agreed; surface where the tension was.\n\n## Recommendation\nBUY, HOLD, or PASS — and at the current price, is it +EV? One short paragraph.\n\n## Key factors\n3–5 bullets driving the call.\n\n## Risks\n2–3 bullets on what would make this wrong.\n\nKeep the whole verdict under 300 words.`;
 
   const synthController = new AbortController();
   const synthTimer = setTimeout(() => synthController.abort(), SYNTH_TIMEOUT_MS);
